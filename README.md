@@ -23,6 +23,18 @@ temperature`. No Python, no PySimpleGUI.
 
 ## Install
 
+### Quick: one command
+
+Run on the laptop (GNOME + Litra). Detects arch, builds + installs the backend
+`.deb` (sudo once), and installs the extension:
+
+```bash
+./setup.sh
+```
+
+Then **log out and back in**. Done. The manual steps below are the same thing
+split apart, if you prefer.
+
 ### 1. Backend (`litra` CLI + udev rules)
 
 ```bash

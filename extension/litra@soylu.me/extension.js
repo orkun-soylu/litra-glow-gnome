@@ -2,17 +2,20 @@
  *
  * Architecture: this extension is a thin front-end. All device I/O is done by
  * the `litra` CLI (timrogers/litra-rs), which we spawn. State is discovered by
- * polling `litra devices --json`. The toggle + sliders are only shown while a
- * device is connected.
+ * polling `litra devices --json`. The toggle is only shown while a device is
+ * connected; brightness/temperature live in the toggle's own popup menu.
  */
 
 import GObject from 'gi://GObject';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import St from 'gi://St';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
-import {QuickSlider, QuickToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
+import {QuickMenuToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
+import {Slider} from 'resource:///org/gnome/shell/ui/slider.js';
 
 const POLL_INTERVAL_SECONDS = 5;   // how often we re-check device presence/state
 const COMMAND_DEBOUNCE_MS = 220;   // coalesce rapid slider drags into one command
@@ -70,16 +73,50 @@ function litraDevices(litraPath, cancellable, cb) {
     });
 }
 
+/* ---------- slider row inside the toggle's popup menu ------------------- */
+
+// A popup-menu row holding an icon + a Slider. `activate: false` keeps a click
+// on the row from closing the menu; the key/scroll forwarding gives the row the
+// same keyboard/wheel behaviour the shell's own volume slider has.
+const SliderMenuItem = GObject.registerClass(
+class SliderMenuItem extends PopupMenu.PopupBaseMenuItem {
+    _init(iconName) {
+        super._init({activate: false});
+
+        this.add_child(new St.Icon({
+            iconName,
+            styleClass: 'popup-menu-icon',
+        }));
+
+        this.slider = new Slider(0);
+        this.slider.x_expand = true;
+        this.add_child(this.slider);
+
+        this.connect('key-press-event', (actor, event) =>
+            this.slider.emit('key-press-event', event));
+        this.connect('scroll-event', (actor, event) =>
+            this.slider.emit('scroll-event', event));
+    }
+});
+
 /* ---------- Quick Settings toggle -------------------------------------- */
 
 const LitraToggle = GObject.registerClass(
-class LitraToggle extends QuickToggle {
+class LitraToggle extends QuickMenuToggle {
     _init() {
         super._init({
             title: 'Litra Glow',
             iconName: 'night-light-symbolic',
             toggleMode: true,
         });
+
+        this.menu.setHeader('night-light-symbolic', 'Litra Glow');
+
+        this.brightness = new SliderMenuItem('display-brightness-symbolic');
+        this.temperature = new SliderMenuItem('weather-clear-symbolic');
+
+        this.menu.addMenuItem(this.brightness);
+        this.menu.addMenuItem(this.temperature);
     }
 });
 
@@ -104,7 +141,8 @@ class LitraIndicator extends SystemIndicator {
         this._brightPending = 0;        // debounce timeout source ids
         this._tempPending = 0;
 
-        // Power toggle
+        // Power toggle; the two sliders live in its popup menu (arrow on the
+        // right of the toggle).
         this._toggle = new LitraToggle();
         this._toggle.connect('notify::checked', () => {
             if (this._syncing)
@@ -113,8 +151,7 @@ class LitraIndicator extends SystemIndicator {
             litraRun(this._litraPath, [this._toggle.checked ? 'on' : 'off']);
         });
 
-        // Brightness slider
-        this._bright = new QuickSlider({iconName: 'display-brightness-symbolic'});
+        this._bright = this._toggle.brightness;
         this._bright.slider.connect('notify::value', () => {
             if (this._syncing)
                 return;
@@ -124,8 +161,7 @@ class LitraIndicator extends SystemIndicator {
             this._debounceBright(clamp(lumen, this._brightMin, this._brightMax));
         });
 
-        // Colour temperature slider
-        this._temp = new QuickSlider({iconName: 'weather-clear-symbolic'});
+        this._temp = this._toggle.temperature;
         this._temp.slider.connect('notify::value', () => {
             if (this._syncing)
                 return;
@@ -136,8 +172,6 @@ class LitraIndicator extends SystemIndicator {
         });
 
         this.quickSettingsItems.push(this._toggle);
-        this.quickSettingsItems.push(this._bright);
-        this.quickSettingsItems.push(this._temp);
 
         this._setVisible(false);        // hidden until a device is found
 
@@ -188,7 +222,9 @@ class LitraIndicator extends SystemIndicator {
 
             const d = devices[0];      // control the first connected Litra
             this._setVisible(true);
-            this._toggle.title = d.device_type_display || 'Litra Glow';
+            const name = d.device_type_display || 'Litra Glow';
+            this._toggle.title = name;
+            this._toggle.menu.setHeader('night-light-symbolic', name);
 
             // Update limits when present.
             if (Number.isFinite(d.minimum_brightness_in_lumen))

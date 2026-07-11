@@ -29,7 +29,8 @@ Done. On Wayland you must log out and back in for GNOME Shell to load the
 extension (you cannot restart the shell in place under Wayland).
 
 After logging back in:
-  * plug in the Litra — a "Litra Glow" tile plus brightness/temperature
-    sliders appear in the Quick Settings menu (top-right).
+  * plug in the Litra — a "Litra Glow" tile appears in the Quick Settings
+    menu (top-right); the arrow on its right opens brightness/temperature
+    sliders.
   * verify the backend first with:  litra devices
 EOF

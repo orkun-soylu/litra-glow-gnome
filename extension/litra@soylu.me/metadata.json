@@ -1,0 +1,8 @@
+{
+  "uuid": "litra@soylu.me",
+  "name": "Litra Glow",
+  "description": "Control a Logitech Litra Glow/Beam from the GNOME Quick Settings menu (on/off, brightness, colour temperature). The toggle appears only while a device is connected. Requires the `litra` CLI backend on PATH.",
+  "shell-version": ["48"],
+  "url": "https://git.soylu.me/orkun/litra-glow-gnome",
+  "version": 1
+}

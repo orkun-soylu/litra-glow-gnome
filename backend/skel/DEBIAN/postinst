@@ -1,0 +1,23 @@
+#!/bin/sh
+# Reload udev so the Litra hidraw node picks up the video/0660 rule, and
+# best-effort add the installing user to the "video" group.
+set -e
+
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules || true
+    udevadm trigger --subsystem-match=hidraw || true
+fi
+
+target_user="${SUDO_USER:-}"
+if [ -n "$target_user" ] && [ "$target_user" != "root" ]; then
+    if ! id -nG "$target_user" 2>/dev/null | tr ' ' '\n' | grep -qx video; then
+        usermod -aG video "$target_user" || true
+        echo "litra-glow-backend: added '$target_user' to the 'video' group."
+        echo "  -> Log out and back in for this to take effect."
+    fi
+else
+    echo "litra-glow-backend: for non-root access, add your user to 'video':"
+    echo "    sudo usermod -aG video \$USER   # then log out and back in"
+fi
+
+exit 0

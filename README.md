@@ -1,89 +1,111 @@
-# Litra Glow — GNOME control
+# Litra Glow — GNOME extension
 
 Control a **Logitech Litra Glow / Beam** from the **GNOME Quick Settings** menu
-on Debian 13 (GNOME 48, Wayland): power on/off, brightness and colour
-temperature. The controls appear only while a device is plugged in.
+on Debian 13 (GNOME Shell 48, Wayland or X11): power, brightness and colour
+temperature. The tile appears only while a device is plugged in.
 
-Two pieces:
+It is a single GNOME Shell extension. The `litra` CLI
+([timrogers/litra-rs](https://github.com/timrogers/litra-rs)) that does the
+USB/HID work is bundled inside the extension's own directory — there is no
+system package, and nothing is installed outside `$HOME` except one udev rule.
 
-| Piece | What it is | Where it runs |
-|-------|-----------|---------------|
-| **backend** | the [`litra`](https://github.com/timrogers/litra-rs) CLI (Rust) + udev rules, packaged as a `.deb` | does the USB/HID I/O |
-| **extension** | a GNOME Shell extension (Quick Settings toggle + sliders) | front-end; shells out to `litra` |
+```
+~/.local/share/gnome-shell/extensions/litra@soylu.me/
+├── metadata.json
+├── extension.js
+└── bin/litra              ← the backend, bundled
 
-The extension never touches USB directly — it detects the device and reads its
-state via `litra devices --json`, and sends changes via `litra on/off/brightness/
-temperature`. No Python, no PySimpleGUI.
+/etc/udev/rules.d/60-litra.rules    ← the only privileged file
+```
 
 ## Requirements
 
-* Debian 13 / GNOME Shell 48 (Wayland or X11)
-* A Litra Glow (`046d:c900`), Beam (`046d:c901`), Beam LX or Beam (`046d:b901` / `046d:c903`)
-* x86-64 (`amd64`). For arm64 rebuild the backend with `build-deb.sh arm64`.
+* Debian 13 / GNOME Shell 48
+* A Litra Glow (`046d:c900`), Beam (`046d:c901`) or Beam LX (`046d:b901` /
+  `046d:c903`)
+* x86-64 or aarch64 — `make` picks the right upstream binary from `uname -m`
+* `make`, `curl` (and `zip`, only for `make pack`)
 
 ## Install
 
-### Quick: one command
-
-Run on the laptop (GNOME + Litra). Detects arch, builds + installs the backend
-`.deb` (sudo once), and installs the extension:
+Clone anywhere — a temp directory is fine, nothing that gets installed depends
+on the checkout surviving:
 
 ```bash
-./setup.sh
+git clone https://git.soylu.me/orkun/litra-glow-gnome.git
+cd litra-glow-gnome
+
+make install    # builds + installs into ~/.local/share/... (no sudo)
+make udev       # installs the udev rule (sudo, once per machine)
 ```
 
-Then **log out and back in**. Done. The manual steps below are the same thing
-split apart, if you prefer.
+Then **log out and back in** — Wayland cannot reload GNOME Shell in place.
+Plug in the Litra and open Quick Settings: a **Litra Glow** tile appears, and
+the arrow on its right opens the brightness and temperature sliders.
 
-### 1. Backend (`litra` CLI + udev rules)
+The checkout can be deleted afterwards.
+
+### Removing it
 
 ```bash
-# build the .deb (downloads the prebuilt litra binary, ~2 s)
-./backend/build-deb.sh amd64          # or: arm64
-
-sudo apt install ./dist/litra-glow-backend_3.3.0_amd64.deb
+make uninstall         # the extension
+make uninstall-udev    # the udev rule as well (sudo)
 ```
 
-The package's post-install adds you to the `video` group and reloads udev.
-**Log out and back in** so the group membership takes effect, then check:
+### Other targets
 
-```bash
-litra devices        # should list your Litra
-```
-
-If it says "permission denied", you are not yet in the `video` group — log out
-and back in (or `sudo usermod -aG video "$USER"`).
-
-### 2. GNOME extension
-
-```bash
-./install-extension.sh
-```
-
-Then **log out and back in** (Wayland can't reload the shell in place). Plug in
-the Litra and open Quick Settings (top-right): a **Litra Glow** tile plus
-**brightness** and **temperature** sliders appear.
+`make` on its own lists them: `build`, `pack`, `check`, `logs`, `clean`,
+`distclean`.
 
 ## How it works
 
-* `backend/skel/usr/lib/udev/rules.d/99-litra.rules` gives the `video` group
-  `0660` on the Litra `hidraw` node, so `litra` runs without root.
-* The extension polls `litra devices --json` every 5 s to show/hide the controls
-  and keep them in sync with the physical device. A short hold window keeps a
-  poll from fighting a slider you're actively dragging.
-* Slider drags are debounced (~220 ms) into a single `litra` invocation.
+* The extension never touches USB. It polls `litra devices --json` to detect
+  the device and read its state, and sends changes via
+  `litra on|off|brightness|temperature`.
+* Polling adapts: every 2 s while the Quick Settings panel is open (so the
+  sliders track the hardware), every 10 s when it is closed (just enough to
+  notice the light being plugged in or out).
+* Slider drags are debounced ~220 ms into a single `litra` call, and a 2 s hold
+  window keeps a poll from fighting a control you are actively using.
+* `60-litra.rules` tags the Litra's `hidraw` node with `uaccess`, so
+  systemd-logind grants an ACL to the locally logged-in user. The rule keeps a
+  `video`-group fallback for systems without logind seat management.
+
+## Upgrading the bundled `litra`
+
+Bump `LITRA_VERSION` in the `Makefile`, add the new release's sha256 sums to
+`checksums.txt`, then `make install`. The download is refused if the hash does
+not match.
 
 ## Troubleshooting
 
-* **No tile appears:** run `litra devices` in a terminal. Empty/error → udev or
-  `video` group issue (see above). Works in terminal but no tile → check the
-  extension is enabled: `gnome-extensions info litra@soylu.me`, and watch logs
-  with `journalctl -f -o cat /usr/bin/gnome-shell`.
-* **Sliders snap back:** that's the 5 s poll syncing to the device; it yields
-  for 2 s after you touch a control.
+* **No tile appears.** Check the backend directly:
+  `~/.local/share/gnome-shell/extensions/litra@soylu.me/bin/litra devices`
+  * Permission denied → the udev rule is missing or was applied too late. Run
+    `make udev` and replug the device. (A rule file named `99-*` will *not*
+    work: it sorts after systemd's `70-uaccess.rules`, so the `uaccess` tag is
+    never acted on. Hence the `60-` prefix.)
+  * Works in a terminal but still no tile → confirm the extension loaded with
+    `gnome-extensions info litra@soylu.me`, and watch `make logs`.
+* **Sliders jump back.** That is the poll syncing to the device; it yields for
+  2 s after you touch a control, and the hardware snaps temperature to
+  multiples of 100 K.
+
+## Migrating from the old `.deb`
+
+Earlier versions shipped a `litra-glow-backend` Debian package and installed
+the extension with a separate script. Clear the leftovers:
+
+```bash
+sudo apt purge litra-glow-backend
+sudo rm -f /usr/lib/udev/rules.d/99-litra.rules
+```
+
+Membership of the `video` group is harmless to keep; `uaccess` makes it
+unnecessary.
 
 ## Credits
 
-Backend binary: [timrogers/litra-rs](https://github.com/timrogers/litra-rs) (the
-HID protocol was originally reverse-engineered in
-[kharyam/litra-driver](https://github.com/kharyam/litra-driver)).
+Backend binary: [timrogers/litra-rs](https://github.com/timrogers/litra-rs).
+The HID protocol was originally reverse-engineered in
+[kharyam/litra-driver](https://github.com/kharyam/litra-driver).

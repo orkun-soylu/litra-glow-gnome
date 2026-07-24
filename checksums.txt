@@ -1,0 +1,5 @@
+# sha256 of the prebuilt `litra` release assets bundled into the extension.
+# Verified against https://github.com/timrogers/litra-rs/releases/tag/v3.3.0
+# Bump alongside LITRA_VERSION in the Makefile.
+5b25aeb4abd22a7ee202c53a213294b8ba412788dcc177f0b4847e0b295f988d  litra_v3.3.0_linux-amd64
+29219a220a43b0f3f6a7abdf4d4dafa8714598e575d6f0a93a6d5e7fba26197b  litra_v3.3.0_linux-aarch64

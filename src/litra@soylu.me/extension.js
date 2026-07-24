@@ -131,6 +131,10 @@ class LitraIndicator extends SystemIndicator {
         this._tempMin = 2700;
         this._tempMax = 6500;
 
+        // Last known device values, from a poll or from the user's own drag.
+        this._lumen = NaN;
+        this._kelvin = NaN;
+
         this._brightPending = 0;        // debounce timeout source ids
         this._tempPending = 0;
         this._pollId = 0;
@@ -143,6 +147,7 @@ class LitraIndicator extends SystemIndicator {
             if (this._syncing)
                 return;
             this._markUser();
+            this._syncSubtitle();
             litraExec(this._litraPath, [this._toggle.checked ? 'on' : 'off'],
                 this._cancellable, null);
         });
@@ -152,10 +157,12 @@ class LitraIndicator extends SystemIndicator {
             if (this._syncing)
                 return;
             this._markUser();
-            const lumen = Math.round(this._brightMin +
-                this._bright.slider.value * (this._brightMax - this._brightMin));
-            this._debounce('_brightPending',
-                ['brightness', '--value', String(clamp(lumen, this._brightMin, this._brightMax))]);
+            const lumen = clamp(Math.round(this._brightMin +
+                this._bright.slider.value * (this._brightMax - this._brightMin)),
+                this._brightMin, this._brightMax);
+            this._lumen = lumen;
+            this._syncSubtitle();
+            this._debounce('_brightPending', ['brightness', '--value', String(lumen)]);
         });
 
         this._temp = this._toggle.temperature;
@@ -169,6 +176,8 @@ class LitraIndicator extends SystemIndicator {
             const raw = this._tempMin +
                 this._temp.slider.value * (this._tempMax - this._tempMin);
             const kelvin = clamp(Math.round(raw / 100) * 100, this._tempMin, this._tempMax);
+            this._kelvin = kelvin;
+            this._syncSubtitle();
             this._debounce('_tempPending', ['temperature', '--value', String(kelvin)]);
         });
 
@@ -190,6 +199,16 @@ class LitraIndicator extends SystemIndicator {
 
     _markUser() {
         this._lastUserAction = GLib.get_monotonic_time() / 1000;
+    }
+
+    /* The subtitle mirrors whatever we last knew, no matter where it came from.
+     * Deriving it from a poll alone would leave it stale for the whole time a
+     * drag keeps renewing the user-hold window that suppresses that poll. */
+    _syncSubtitle() {
+        this._toggle.subtitle =
+            this._toggle.checked && Number.isFinite(this._lumen) && Number.isFinite(this._kelvin)
+                ? `${this._lumen} lm · ${this._kelvin} K`
+                : null;
     }
 
     _setVisible(visible) {
@@ -270,6 +289,11 @@ class LitraIndicator extends SystemIndicator {
                 const lumen = d.brightness_in_lumen;
                 const kelvin = d.temperature_in_kelvin;
 
+                if (Number.isFinite(lumen))
+                    this._lumen = lumen;
+                if (Number.isFinite(kelvin))
+                    this._kelvin = kelvin;
+
                 if (this._brightMax > this._brightMin && Number.isFinite(lumen)) {
                     this._bright.slider.value = clamp(
                         (lumen - this._brightMin) / (this._brightMax - this._brightMin), 0, 1);
@@ -279,9 +303,7 @@ class LitraIndicator extends SystemIndicator {
                         (kelvin - this._tempMin) / (this._tempMax - this._tempMin), 0, 1);
                 }
 
-                this._toggle.subtitle = d.is_on && Number.isFinite(lumen) && Number.isFinite(kelvin)
-                    ? `${lumen} lm · ${kelvin} K`
-                    : null;
+                this._syncSubtitle();
             } finally {
                 this._syncing = false;
             }

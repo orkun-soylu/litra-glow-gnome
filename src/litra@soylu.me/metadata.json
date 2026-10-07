@@ -3,7 +3,10 @@
   "name": "Litra Glow",
   "description": "Control a Logitech Litra Glow/Beam from the GNOME Quick Settings menu: on/off, brightness and colour temperature. The toggle appears only while a device is connected. Talks to the light directly over hidraw; needs a udev rule for access (see the README).",
   "shell-version": [
-    "48"
+    "48",
+    "49",
+    "50",
+    "51"
   ],
   "url": "https://github.com/orkun-soylu/litra-glow-gnome",
   "version": 3

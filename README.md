@@ -40,8 +40,9 @@ make udev       # installs the udev rule (sudo, once per machine)
 ```
 
 Then **log out and back in** — Wayland cannot reload GNOME Shell in place.
-Plug in the Litra and open Quick Settings: a **Litra Glow** tile appears, and
-the arrow on its right opens the brightness and temperature sliders.
+Plug in the Litra and open Quick Settings: a **Litra Glow** tile appears — with
+the current brightness and temperature under its title while the light is on —
+and the arrow on its right opens the two sliders.
 
 The checkout can be deleted afterwards.
 
@@ -67,6 +68,12 @@ make uninstall-udev    # the udev rule as well (sudo)
   notice the light being plugged in or out).
 * Slider drags are debounced ~220 ms into a single `litra` call, and a 2 s hold
   window keeps a poll from fighting a control you are actively using.
+* The tile's subtitle (`167 lm · 6500 K`, blank while the light is off) is
+  written by the sliders as well as by the poll, so it follows a drag as it
+  happens rather than waiting for the hold window to lapse. It shows the value
+  actually sent to the device — brightness clamped to the device's range,
+  temperature snapped to a multiple of 100 K — so it does not jump when the
+  next poll lands.
 * `60-litra.rules` tags the Litra's `hidraw` node with `uaccess`, so
   systemd-logind grants an ACL to the locally logged-in user. The rule keeps a
   `video`-group fallback for systems without logind seat management.

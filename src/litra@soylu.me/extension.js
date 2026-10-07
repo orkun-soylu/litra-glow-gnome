@@ -1,9 +1,8 @@
 /* Litra Glow — GNOME Quick Settings control for Logitech Litra devices.
  *
- * This extension is a thin front-end: all USB/HID I/O is done by the `litra`
- * CLI (timrogers/litra-rs), which ships inside this extension's own `bin/`
- * directory and is spawned as a subprocess. State is discovered by polling
- * `litra devices --json`. The toggle is shown only while a device is
+ * The light is driven directly over its hidraw node (device.js, protocol.js);
+ * nothing outside this directory is needed except a udev rule granting access.
+ * State is discovered by polling. The toggle is shown only while a device is
  * connected; brightness and temperature live in the toggle's popup menu.
  */
 
@@ -18,6 +17,9 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import {QuickMenuToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
 import {Slider} from 'resource:///org/gnome/shell/ui/slider.js';
 
+import {LitraDevice, findDevice} from './device.js';
+import * as Proto from './protocol.js';
+
 // Polling adapts to whether the controls are actually on screen: while the
 // Quick Settings panel is open the sliders should track the device, but with it
 // closed we only need to notice the light being plugged in or out.
@@ -26,42 +28,12 @@ const POLL_IDLE_SECONDS = 10;
 
 const COMMAND_DEBOUNCE_MS = 220;   // coalesce rapid slider drags into one command
 const USER_HOLD_MS = 2000;         // don't let a poll fight a recent user change
+const EVENT_POLL_DELAY_MS = 150;   // coalesce the light's own change notifications
 
 /* ---------- helpers ---------------------------------------------------- */
 
 function clamp(v, lo, hi) {
     return Math.min(hi, Math.max(lo, v));
-}
-
-/* Spawn `litra <args...>`. Both pipes are read to completion, so a chatty child
- * can never wedge on a full pipe buffer, and stderr is available for the log
- * when a command fails. `onDone` gets stdout, or null on failure. */
-function litraExec(litraPath, args, cancellable, onDone) {
-    let proc;
-    try {
-        proc = Gio.Subprocess.new(
-            [litraPath, ...args],
-            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
-    } catch (e) {
-        console.error(`litra: cannot spawn (${args.join(' ')}): ${e.message}`);
-        onDone?.(null);
-        return;
-    }
-
-    proc.communicate_utf8_async(null, cancellable, (p, res) => {
-        let stdout = null;
-        try {
-            const [, out, err] = p.communicate_utf8_finish(res);
-            if (p.get_successful())
-                stdout = out;
-            else
-                console.error(`litra ${args.join(' ')}: ${(err ?? '').trim()}`);
-        } catch (e) {
-            if (!e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
-                console.error(`litra ${args.join(' ')}: ${e.message}`);
-        }
-        onDone?.(stdout);
-    });
 }
 
 /* ---------- slider row inside the toggle's popup menu ------------------- */
@@ -115,21 +87,22 @@ class LitraToggle extends QuickMenuToggle {
 
 const LitraIndicator = GObject.registerClass(
 class LitraIndicator extends SystemIndicator {
-    _init(litraPath) {
+    _init() {
         super._init();
 
-        this._litraPath = litraPath;
+        this._device = null;
         this._destroyed = false;
+        this._polling = false;
+        this._lastProblem = null;       // last logged discovery/IO problem, to log each once
         this._syncing = false;          // suppress handlers during programmatic sync
         this._lastUserAction = 0;       // monotonic ms of last user interaction
-        this._cancellable = new Gio.Cancellable();
 
         // Device limits (lumen / kelvin). These are the Litra Glow's values;
-        // they get replaced by whatever the connected device reports.
+        // they get replaced by the connected model's.
         this._brightMin = 20;
         this._brightMax = 250;
-        this._tempMin = 2700;
-        this._tempMax = 6500;
+        this._tempMin = Proto.MIN_KELVIN;
+        this._tempMax = Proto.MAX_KELVIN;
 
         // Last known device values, from a poll or from the user's own drag.
         this._lumen = NaN;
@@ -137,6 +110,7 @@ class LitraIndicator extends SystemIndicator {
 
         this._brightPending = 0;        // debounce timeout source ids
         this._tempPending = 0;
+        this._eventPollId = 0;
         this._pollId = 0;
         this._pollSeconds = 0;
 
@@ -148,8 +122,8 @@ class LitraIndicator extends SystemIndicator {
                 return;
             this._markUser();
             this._syncSubtitle();
-            litraExec(this._litraPath, [this._toggle.checked ? 'on' : 'off'],
-                this._cancellable, null);
+            const on = this._toggle.checked;
+            this._command(d => d.setOn(on));
         });
 
         this._bright = this._toggle.brightness;
@@ -162,7 +136,7 @@ class LitraIndicator extends SystemIndicator {
                 this._brightMin, this._brightMax);
             this._lumen = lumen;
             this._syncSubtitle();
-            this._debounce('_brightPending', ['brightness', '--value', String(lumen)]);
+            this._debounce('_brightPending', d => d.setBrightness(lumen));
         });
 
         this._temp = this._toggle.temperature;
@@ -175,10 +149,11 @@ class LitraIndicator extends SystemIndicator {
             // device actually took.
             const raw = this._tempMin +
                 this._temp.slider.value * (this._tempMax - this._tempMin);
-            const kelvin = clamp(Math.round(raw / 100) * 100, this._tempMin, this._tempMax);
+            const step = Proto.KELVIN_STEP;
+            const kelvin = clamp(Math.round(raw / step) * step, this._tempMin, this._tempMax);
             this._kelvin = kelvin;
             this._syncSubtitle();
-            this._debounce('_tempPending', ['temperature', '--value', String(kelvin)]);
+            this._debounce('_tempPending', d => d.setTemperature(kelvin));
         });
 
         this.quickSettingsItems.push(this._toggle);
@@ -228,92 +203,147 @@ class LitraIndicator extends SystemIndicator {
         });
     }
 
-    /* Coalesce a burst of slider updates into a single `litra` invocation.
-     * `slot` names the field holding the pending timeout id. */
-    _debounce(slot, args) {
+    /* Send one change to the light, if one is connected. */
+    _command(send) {
+        if (!this._device)
+            return;
+        send(this._device).catch(e => {
+            if (!this._destroyed)
+                console.error(`litra: ${e.message}`);
+        });
+    }
+
+    /* Coalesce a burst of slider updates into a single command. `slot` names
+     * the field holding the pending timeout id. */
+    _debounce(slot, send) {
         if (this[slot])
             GLib.source_remove(this[slot]);
         this[slot] = GLib.timeout_add(GLib.PRIORITY_DEFAULT, COMMAND_DEBOUNCE_MS, () => {
             this[slot] = 0;
-            litraExec(this._litraPath, args, this._cancellable, null);
+            this._command(send);
             return GLib.SOURCE_REMOVE;
         });
     }
 
-    _poll() {
-        litraExec(this._litraPath, ['devices', '--json'], this._cancellable, (stdout) => {
-            // A subprocess callback can land after disable(); the actors are
-            // gone by then, so there is nothing left to update.
-            if (this._destroyed)
-                return;
+    /* Log a problem once, not on every poll while it persists. */
+    _problem(message) {
+        if (message !== this._lastProblem && message !== null)
+            console.warn(`litra: ${message}`);
+        this._lastProblem = message;
+    }
 
-            let devices = null;
-            try {
-                const parsed = JSON.parse(stdout ?? '');
-                if (Array.isArray(parsed))
-                    devices = parsed;
-            } catch {
-                devices = null;
-            }
+    /* The open device, opening the first one found if there is none yet. */
+    _ensureDevice() {
+        if (this._device)
+            return this._device;
 
-            if (!devices || devices.length === 0) {
+        const found = findDevice();
+        if (!found)
+            return null;
+
+        const device = new LitraDevice(found.path, found.model, {
+            // The light reports button presses on its own; read the new state.
+            onEvent: () => this._schedulePoll(),
+            onLost: () => this._dropDevice(),
+        });
+        try {
+            device.open();
+        } catch (e) {
+            this._problem(e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.PERMISSION_DENIED)
+                ? `no access to ${found.path} — install the udev rule (make udev) and replug the light`
+                : `cannot open ${found.path}: ${e.message}`);
+            return null;
+        }
+
+        this._device = device;
+        this._brightMin = device.model.minLumen;
+        this._brightMax = device.model.maxLumen;
+        this._toggle.title = device.model.name;
+        this._toggle.menu.setHeader('display-brightness-symbolic', device.model.name);
+        return device;
+    }
+
+    _dropDevice() {
+        this._device?.close();
+        this._device = null;
+        if (!this._destroyed)
+            this._setVisible(false);
+    }
+
+    _schedulePoll() {
+        if (this._eventPollId)
+            return;
+        this._eventPollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, EVENT_POLL_DELAY_MS, () => {
+            this._eventPollId = 0;
+            this._poll();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    async _poll() {
+        if (this._polling || this._destroyed)
+            return;
+        this._polling = true;
+        try {
+            const device = this._ensureDevice();
+            if (!device) {
                 this._setVisible(false);
                 return;
             }
 
-            const d = devices[0];       // control the first connected Litra
-            this._setVisible(true);
-
-            const name = d.device_type_display || 'Litra Glow';
-            this._toggle.title = name;
-            this._toggle.menu.setHeader('display-brightness-symbolic', name);
-
-            if (Number.isFinite(d.minimum_brightness_in_lumen))
-                this._brightMin = d.minimum_brightness_in_lumen;
-            if (Number.isFinite(d.maximum_brightness_in_lumen))
-                this._brightMax = d.maximum_brightness_in_lumen;
-            if (Number.isFinite(d.minimum_temperature_in_kelvin))
-                this._tempMin = d.minimum_temperature_in_kelvin;
-            if (Number.isFinite(d.maximum_temperature_in_kelvin))
-                this._tempMax = d.maximum_temperature_in_kelvin;
-
-            // Don't yank the controls out from under a recent user interaction.
-            const now = GLib.get_monotonic_time() / 1000;
-            if (now - this._lastUserAction < USER_HOLD_MS)
+            let state;
+            try {
+                state = await device.readState();
+            } catch (e) {
+                // disable() closes the device under a poll in flight
+                if (this._destroyed)
+                    return;
+                this._problem(`lost ${device.path}: ${e.message}`);
+                this._dropDevice();
+                return;
+            }
+            if (this._destroyed || device !== this._device)
                 return;
 
-            this._syncing = true;
-            try {
-                this._toggle.checked = !!d.is_on;
+            this._problem(null);
+            this._setVisible(true);
+            this._applyState(state);
+        } finally {
+            this._polling = false;
+        }
+    }
 
-                const lumen = d.brightness_in_lumen;
-                const kelvin = d.temperature_in_kelvin;
+    _applyState({on, lumen, kelvin}) {
+        // Don't yank the controls out from under a recent user interaction.
+        const now = GLib.get_monotonic_time() / 1000;
+        if (now - this._lastUserAction < USER_HOLD_MS)
+            return;
 
-                if (Number.isFinite(lumen))
-                    this._lumen = lumen;
-                if (Number.isFinite(kelvin))
-                    this._kelvin = kelvin;
+        this._syncing = true;
+        try {
+            this._toggle.checked = on;
+            this._lumen = lumen;
+            this._kelvin = kelvin;
 
-                if (this._brightMax > this._brightMin && Number.isFinite(lumen)) {
-                    this._bright.slider.value = clamp(
-                        (lumen - this._brightMin) / (this._brightMax - this._brightMin), 0, 1);
-                }
-                if (this._tempMax > this._tempMin && Number.isFinite(kelvin)) {
-                    this._temp.slider.value = clamp(
-                        (kelvin - this._tempMin) / (this._tempMax - this._tempMin), 0, 1);
-                }
-
-                this._syncSubtitle();
-            } finally {
-                this._syncing = false;
+            if (this._brightMax > this._brightMin) {
+                this._bright.slider.value = clamp(
+                    (lumen - this._brightMin) / (this._brightMax - this._brightMin), 0, 1);
             }
-        });
+            if (this._tempMax > this._tempMin) {
+                this._temp.slider.value = clamp(
+                    (kelvin - this._tempMin) / (this._tempMax - this._tempMin), 0, 1);
+            }
+
+            this._syncSubtitle();
+        } finally {
+            this._syncing = false;
+        }
     }
 
     destroy() {
         this._destroyed = true;
 
-        for (const slot of ['_pollId', '_brightPending', '_tempPending']) {
+        for (const slot of ['_pollId', '_eventPollId', '_brightPending', '_tempPending']) {
             if (this[slot]) {
                 GLib.source_remove(this[slot]);
                 this[slot] = 0;
@@ -325,7 +355,8 @@ class LitraIndicator extends SystemIndicator {
         }
         this._panelMenu = null;
 
-        this._cancellable.cancel();
+        this._device?.close();
+        this._device = null;
         this.quickSettingsItems.forEach(item => item.destroy());
         this.quickSettingsItems = [];
         super.destroy();
@@ -336,19 +367,7 @@ class LitraIndicator extends SystemIndicator {
 
 export default class LitraExtension extends Extension {
     enable() {
-        // The bundled binary is the supported path; a PATH lookup is kept as a
-        // fallback for anyone who already has `litra` installed system-wide.
-        const bundled = GLib.build_filenamev([this.path, 'bin', 'litra']);
-        const litraPath = GLib.file_test(bundled, GLib.FileTest.IS_EXECUTABLE)
-            ? bundled
-            : GLib.find_program_in_path('litra');
-
-        if (!litraPath) {
-            console.error('litra: no `litra` binary found — reinstall with `make install`');
-            return;
-        }
-
-        this._indicator = new LitraIndicator(litraPath);
+        this._indicator = new LitraIndicator();
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
     }
 

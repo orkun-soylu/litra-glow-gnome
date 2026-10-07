@@ -1,5 +1,5 @@
 # Logitech Litra devices — grant the desktop user access to the hidraw node so
-# the `litra` CLI runs without root.
+# the extension can talk to it without root.
 #
 # This file MUST sort before systemd's /usr/lib/udev/rules.d/70-uaccess.rules:
 # that file is what turns TAG=="uaccess" into an ACL, and it only sees tags set
@@ -11,7 +11,7 @@
 #   GROUP/MODE      -> fallback for setups without logind seat management, and
 #                      for anyone still in "video" from the old .deb.
 #
-# Device ids from timrogers/litra-rs: Glow c900, Beam c901, Beam LX b901/c903.
+# Device ids (from timrogers/litra-rs; mirrored in protocol.js): Glow c900, Beam c901, Beam LX b901/c903.
 
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c900", TAG+="uaccess", GROUP="video", MODE="0660"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c901", TAG+="uaccess", GROUP="video", MODE="0660"

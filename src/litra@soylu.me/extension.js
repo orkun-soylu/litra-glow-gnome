@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-/* Litra Glow — GNOME Quick Settings control for Logitech Litra devices.
- *
- * The light is driven directly over its hidraw node (device.js, protocol.js);
- * nothing outside this directory is needed except a udev rule granting access.
- * State is discovered by polling. The toggle is shown only while a device is
- * connected; brightness and temperature live in the toggle's popup menu.
- */
+/* Litra Glow — Quick Settings control for Logitech Litra lights. */
 
 import GObject from 'gi://GObject';
 import Gio from 'gi://Gio';
@@ -22,27 +16,18 @@ import {Slider} from 'resource:///org/gnome/shell/ui/slider.js';
 import {LitraDevice, findDevice} from './device.js';
 import * as Proto from './protocol.js';
 
-// Polling adapts to whether the controls are actually on screen: while the
-// Quick Settings panel is open the sliders should track the device, but with it
-// closed we only need to notice the light being plugged in or out.
-const POLL_ACTIVE_SECONDS = 2;
+const POLL_ACTIVE_SECONDS = 2;     // while Quick Settings is open
 const POLL_IDLE_SECONDS = 10;
 
-const COMMAND_DEBOUNCE_MS = 220;   // coalesce rapid slider drags into one command
-const USER_HOLD_MS = 2000;         // don't let a poll fight a recent user change
-const EVENT_POLL_DELAY_MS = 150;   // coalesce the light's own change notifications
-
-/* ---------- helpers ---------------------------------------------------- */
+const COMMAND_DEBOUNCE_MS = 220;
+const USER_HOLD_MS = 2000;         // a poll does not override a recent user change
+const EVENT_POLL_DELAY_MS = 150;
 
 function clamp(v, lo, hi) {
     return Math.min(hi, Math.max(lo, v));
 }
 
-/* ---------- slider row inside the toggle's popup menu ------------------- */
-
-/* A popup-menu row holding an icon + a Slider. `activate: false` keeps a click
- * on the row from closing the menu; forwarding key and scroll events gives the
- * row the same keyboard/wheel behaviour as the shell's own volume slider. */
+/* Menu row with an icon and a slider; key and scroll events go to the slider. */
 const SliderMenuItem = GObject.registerClass(
 class SliderMenuItem extends PopupMenu.PopupBaseMenuItem {
     _init(iconName) {
@@ -63,8 +48,6 @@ class SliderMenuItem extends PopupMenu.PopupBaseMenuItem {
             this.slider.emit('scroll-event', event));
     }
 });
-
-/* ---------- Quick Settings toggle -------------------------------------- */
 
 const LitraToggle = GObject.registerClass(
 class LitraToggle extends QuickMenuToggle {
@@ -93,8 +76,6 @@ class LitraToggle extends QuickMenuToggle {
     }
 });
 
-/* ---------- indicator (owns the toggle) -------------------------------- */
-
 const LitraIndicator = GObject.registerClass(
 class LitraIndicator extends SystemIndicator {
     _init() {
@@ -103,29 +84,25 @@ class LitraIndicator extends SystemIndicator {
         this._device = null;
         this._destroyed = false;
         this._polling = false;
-        this._lastProblem = null;       // last logged discovery/IO problem, to log each once
-        this._syncing = false;          // suppress handlers during programmatic sync
-        this._lastUserAction = 0;       // monotonic ms of last user interaction
+        this._lastProblem = null;
+        this._syncing = false;          // set while the UI is updated from the device
+        this._lastUserAction = 0;       // ms, monotonic
 
-        // Device limits (lumen / kelvin). These are the Litra Glow's values;
-        // they get replaced by the connected model's.
+        // Litra Glow limits until a device is found
         this._brightMin = 20;
         this._brightMax = 250;
         this._tempMin = Proto.MIN_KELVIN;
         this._tempMax = Proto.MAX_KELVIN;
 
-        // Last known device values, from a poll or from the user's own drag.
         this._lumen = NaN;
         this._kelvin = NaN;
 
-        this._brightPending = 0;        // debounce timeout source ids
+        this._brightPending = 0;
         this._tempPending = 0;
         this._eventPollId = 0;
         this._pollId = 0;
         this._pollSeconds = 0;
 
-        // Power toggle; the two sliders live in its popup menu, reached via the
-        // arrow on the toggle's right.
         this._toggle = new LitraToggle();
         this._toggle.connectObject('notify::checked', () => {
             if (this._syncing)
@@ -154,9 +131,7 @@ class LitraIndicator extends SystemIndicator {
             if (this._syncing)
                 return;
             this._markUser();
-            // The hardware only accepts multiples of 100 K. The slider is left
-            // where the user put it; the next poll snaps it to the value the
-            // device actually took.
+            // The light only accepts multiples of 100 K.
             const raw = this._tempMin +
                 this._temp.slider.value * (this._tempMax - this._tempMin);
             const step = Proto.KELVIN_STEP;
@@ -167,10 +142,8 @@ class LitraIndicator extends SystemIndicator {
         }, this);
 
         this.quickSettingsItems.push(this._toggle);
-        this._setVisible(false);        // hidden until a device is found
+        this._setVisible(false);        // until a device is found
 
-        // Poll faster while the Quick Settings panel is open — that is the only
-        // time the controls are visible.
         this._panelMenu = Main.panel.statusArea.quickSettings.menu;
         this._panelMenuId = this._panelMenu.connect('open-state-changed', (menu, isOpen) => {
             this._setPollInterval(isOpen ? POLL_ACTIVE_SECONDS : POLL_IDLE_SECONDS);
@@ -186,9 +159,7 @@ class LitraIndicator extends SystemIndicator {
         this._lastUserAction = GLib.get_monotonic_time() / 1000;
     }
 
-    /* The subtitle mirrors whatever we last knew, no matter where it came from.
-     * Deriving it from a poll alone would leave it stale for the whole time a
-     * drag keeps renewing the user-hold window that suppresses that poll. */
+    /* Updated by both the poll and the sliders, so it follows a drag. */
     _syncSubtitle() {
         this._toggle.subtitle =
             this._toggle.checked && Number.isFinite(this._lumen) && Number.isFinite(this._kelvin)
@@ -213,7 +184,6 @@ class LitraIndicator extends SystemIndicator {
         });
     }
 
-    /* Send one change to the light, if one is connected. */
     _command(send) {
         if (!this._device)
             return;
@@ -223,8 +193,7 @@ class LitraIndicator extends SystemIndicator {
         });
     }
 
-    /* Coalesce a burst of slider updates into a single command. `slot` names
-     * the field holding the pending timeout id. */
+    /* `slot` names the field holding the pending timeout id. */
     _debounce(slot, send) {
         if (this[slot])
             GLib.source_remove(this[slot]);
@@ -235,25 +204,23 @@ class LitraIndicator extends SystemIndicator {
         });
     }
 
-    /* Log a problem once, not on every poll while it persists. */
+    /* Log each problem once, not on every poll. */
     _problem(message) {
         if (message !== this._lastProblem && message !== null)
             console.warn(`litra: ${message}`);
         this._lastProblem = message;
     }
 
-    /* The open device, opening the first one found if there is none yet. */
     async _ensureDevice() {
         if (this._device)
             return this._device;
 
         const found = await findDevice();
-        // disable() may have run while the search was in flight
+        // disable() may have run meanwhile
         if (!found || this._destroyed)
             return null;
 
         const device = new LitraDevice(found.path, found.model, {
-            // The light reports button presses on its own; read the new state.
             onEvent: () => this._schedulePoll(),
             onLost: () => this._dropDevice(),
         });
@@ -308,7 +275,6 @@ class LitraIndicator extends SystemIndicator {
             try {
                 state = await device.readState();
             } catch (e) {
-                // disable() closes the device under a poll in flight
                 if (this._destroyed)
                     return;
                 this._problem(`lost ${device.path}: ${e.message}`);
@@ -327,7 +293,6 @@ class LitraIndicator extends SystemIndicator {
     }
 
     _applyState({on, lumen, kelvin}) {
-        // Don't yank the controls out from under a recent user interaction.
         const now = GLib.get_monotonic_time() / 1000;
         if (now - this._lastUserAction < USER_HOLD_MS)
             return;
@@ -391,8 +356,6 @@ class LitraIndicator extends SystemIndicator {
         super.destroy();
     }
 });
-
-/* ---------- extension entry point -------------------------------------- */
 
 export default class LitraExtension extends Extension {
     enable() {

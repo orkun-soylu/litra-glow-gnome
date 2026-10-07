@@ -2,15 +2,9 @@
 
 /* hidraw discovery and asynchronous I/O for a Litra light.
  *
- * GNOME Shell is single-threaded, so nothing here blocks. The node is opened
- * through Gio, then its file descriptor is wrapped in GioUnix streams: those
- * are pollable, so reads wait on the main loop instead of parking a worker
- * thread, and a cancelled read returns at once. That matters because the light
- * only speaks when spoken to (or when its buttons are pressed) — a thread
- * blocked in read() would outlive disable(), which runs on every screen lock.
- *
- * Requests go out one at a time. A get resolves with the matching reply's
- * payload; a set resolves once the report is written, as litra-rs does.
+ * Reads use pollable GioUnix streams, so a pending read can be cancelled on
+ * disable() instead of leaving a thread blocked in read(). Requests are sent
+ * one at a time.
  */
 
 import GLib from 'gi://GLib';
@@ -20,9 +14,9 @@ import GioUnix from 'gi://GioUnix';
 import * as Proto from './protocol.js';
 
 const REPLY_TIMEOUT_MS = 1000;
-const READ_SIZE = 64;           // larger than any report, so one read = one report
+const READ_SIZE = 64;           // one read returns one report
 
-/* Read a small file without blocking the shell. Resolves with its bytes. */
+/* Read a small file asynchronously. */
 function readFile(path) {
     return new Promise((resolve, reject) => {
         Gio.File.new_for_path(path).load_contents_async(null, (file, res) => {
@@ -35,9 +29,7 @@ function readFile(path) {
     });
 }
 
-/* Find the first Litra's hidraw node: a matching vendor/product id whose
- * report descriptor declares the HID++ usage page. Resolves with {path, model}
- * or null. Nodes are tried in name order, so the choice is stable. */
+/* Resolves with {path, model} of the first Litra hidraw node, or null. */
 export async function findDevice() {
     const base = '/sys/class/hidraw';
     let names = [];
@@ -77,7 +69,7 @@ export async function findDevice() {
             continue;
         }
 
-        // Usage Page item (0x06) with the page as a little-endian u16
+        // Usage Page item: 0x06, then the page as little-endian u16
         const page = Proto.USAGE_PAGE;
         for (let i = 0; i + 2 < desc.length; i++) {
             if (desc[i] === 0x06 && desc[i + 1] === (page & 0xff) && desc[i + 2] === page >> 8)
@@ -88,8 +80,7 @@ export async function findDevice() {
 }
 
 export class LitraDevice {
-    /* `onEvent()` runs when the light reports a change on its own; `onLost()`
-     * when the node stops working (usually: unplugged). */
+    /* onEvent: the light reported a change itself. onLost: the node failed. */
     constructor(path, model, {onEvent, onLost}) {
         this.path = path;
         this.model = model;
@@ -101,10 +92,10 @@ export class LitraDevice {
         this._output = null;
         this._cancellable = null;
         this._queue = Promise.resolve();
-        this._waiter = null;    // {fn, resolve, reject, timeoutId} of the get in flight
+        this._waiter = null;    // the get in flight
     }
 
-    /** Throws (e.g. Gio.IOErrorEnum.PERMISSION_DENIED) if the node cannot be opened. */
+    /** Throws if the node cannot be opened. */
     open() {
         const io = Gio.File.new_for_path(this.path).open_readwrite(null);
         const fd = io.get_input_stream().get_fd();
@@ -125,7 +116,7 @@ export class LitraDevice {
         try {
             this._io.close(null);
         } catch {
-            // nothing useful to do about a failed close
+            // ignore
         }
         this._io = this._input = this._output = this._cancellable = null;
     }
@@ -154,9 +145,7 @@ export class LitraDevice {
         return this._set(Proto.setTemperatureReport(this.model, kelvin));
     }
 
-    /* ---------- internals ---------- */
-
-    // Run `task` after everything queued before it, whether that succeeded or not.
+    // Run `task` after the previously queued ones, whatever their outcome.
     _enqueue(task) {
         const result = this._queue.then(task);
         this._queue = result.catch(() => {});
@@ -223,7 +212,7 @@ export class LitraDevice {
                         this._lost(e);
                     return;
                 }
-                if (data.length === 0) {    // EOF: the node went away
+                if (data.length === 0) {    // EOF
                     this._lost(new Error('end of stream'));
                     return;
                 }
@@ -241,7 +230,6 @@ export class LitraDevice {
         const w = this._waiter;
         switch (report.kind) {
         case 'reply':
-            // Replies to our sets also land here; nobody waits for those.
             if (w && report.feature === this.model.feature && report.fn === w.fn) {
                 this._waiter = null;
                 GLib.source_remove(w.timeoutId);

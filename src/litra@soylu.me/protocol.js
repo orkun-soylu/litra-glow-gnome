@@ -1,18 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-/* Litra HID++ codec — pure functions, no GNOME imports, so the tests in
- * tools/selftest.mjs can run it under node.
+/* Litra HID++ codec. No GNOME imports, so tools/selftest.mjs runs it in node.
  *
- * Every message is a 20-byte HID++ 2.0 "long" report:
- *
- *   [0x11, 0xff, feature, function, payload...]
- *
- * `feature` is the index of the illumination feature on the device (0x04 on
- * Glow/Beam, 0x06 on Beam LX) and `function` packs the HID++ function id in the
- * high nibble with a software id in the low nibble. The byte values are the
- * ones timrogers/litra-rs sends; the device echoes the first four bytes in its
- * reply. Reports with a software id of 0 are notifications the light sends on
- * its own, e.g. when its physical buttons are pressed.
+ * Messages are 20-byte HID++ 2.0 long reports: [0x11, 0xff, feature, function,
+ * payload...]. The byte values follow timrogers/litra-rs. A software id of 0
+ * (low nibble of `function`) marks a notification, e.g. a button press.
  */
 
 export const VENDOR_ID = 0x046d;
@@ -21,7 +13,7 @@ export const REPORT_ID = 0x11;
 export const REPORT_SIZE = 20;
 
 const DEVICE_INDEX = 0xff;
-const ERROR_FEATURE = 0xff;     // HID++ 2.0 error replies carry 0xff here
+const ERROR_FEATURE = 0xff;     // feature byte of an HID++ error reply
 
 export const MIN_KELVIN = 2700;
 export const MAX_KELVIN = 6500;
@@ -46,7 +38,7 @@ export const MODELS = new Map([
     [0xc903, BEAM_LX],
 ]);
 
-/** A request report: header, then `payload` bytes, zero-padded to 20. */
+/** A request report, zero-padded to 20 bytes. */
 export function buildReport(feature, fn, payload = []) {
     const report = new Uint8Array(REPORT_SIZE);
     report.set([REPORT_ID, DEVICE_INDEX, feature, fn, ...payload]);
@@ -74,12 +66,8 @@ export function setTemperatureReport(model, kelvin) {
     return buildReport(model.feature, SET_TEMPERATURE, u16(kelvin));
 }
 
-/* Classify an incoming report. Returns null for anything that is not HID++
- * long report from the device itself, otherwise one of
- *   {kind: 'reply', feature, fn, payload}
- *   {kind: 'event', feature, fn, payload}     (software id 0)
- *   {kind: 'error', feature, fn, code}        (fn = the request that failed)
- */
+/* Classify an incoming report: {kind: 'reply'|'event', feature, fn, payload},
+ * {kind: 'error', feature, fn, code}, or null if it is not an HID++ long report. */
 export function parseReport(data) {
     if (data.length < 5 || data[0] !== REPORT_ID || data[1] !== DEVICE_INDEX)
         return null;
@@ -95,12 +83,12 @@ export function parseReport(data) {
     };
 }
 
-/** Big-endian u16 at the start of a reply payload (lumen, kelvin). */
+/** Big-endian u16 at the start of a payload (lumen, kelvin). */
 export function readU16(payload) {
     return (payload[0] << 8) | payload[1];
 }
 
-/** On/off flag at the start of a reply payload. */
+/** On/off flag at the start of a payload. */
 export function readOn(payload) {
     return payload[0] === 1;
 }

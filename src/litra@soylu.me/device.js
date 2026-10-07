@@ -22,10 +22,23 @@ import * as Proto from './protocol.js';
 const REPLY_TIMEOUT_MS = 1000;
 const READ_SIZE = 64;           // larger than any report, so one read = one report
 
+/* Read a small file without blocking the shell. Resolves with its bytes. */
+function readFile(path) {
+    return new Promise((resolve, reject) => {
+        Gio.File.new_for_path(path).load_contents_async(null, (file, res) => {
+            try {
+                resolve(file.load_contents_finish(res)[1]);
+            } catch (e) {
+                reject(e);
+            }
+        });
+    });
+}
+
 /* Find the first Litra's hidraw node: a matching vendor/product id whose
- * report descriptor declares the HID++ usage page. Returns {path, model} or
- * null. Nodes are tried in name order, so the choice is stable. */
-export function findDevice() {
+ * report descriptor declares the HID++ usage page. Resolves with {path, model}
+ * or null. Nodes are tried in name order, so the choice is stable. */
+export async function findDevice() {
     const base = '/sys/class/hidraw';
     let names = [];
     try {
@@ -41,10 +54,9 @@ export function findDevice() {
 
     for (const name of names) {
         const devDir = `${base}/${name}/device`;
-        let uevent, desc;
+        let uevent;
         try {
-            uevent = new TextDecoder().decode(GLib.file_get_contents(`${devDir}/uevent`)[1]);
-            desc = GLib.file_get_contents(`${devDir}/report_descriptor`)[1];
+            uevent = new TextDecoder().decode(await readFile(`${devDir}/uevent`));
         } catch {
             continue;
         }
@@ -57,6 +69,13 @@ export function findDevice() {
         const model = Proto.MODELS.get(product);
         if (vendor !== Proto.VENDOR_ID || !model)
             continue;
+
+        let desc;
+        try {
+            desc = await readFile(`${devDir}/report_descriptor`);
+        } catch {
+            continue;
+        }
 
         // Usage Page item (0x06) with the page as a little-endian u16
         const page = Proto.USAGE_PAGE;

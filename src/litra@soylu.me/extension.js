@@ -83,6 +83,14 @@ class LitraToggle extends QuickMenuToggle {
         this.menu.addMenuItem(this.brightness);
         this.menu.addMenuItem(this.temperature);
     }
+
+    destroy() {
+        this.brightness.destroy();
+        this.brightness = null;
+        this.temperature.destroy();
+        this.temperature = null;
+        super.destroy();
+    }
 });
 
 /* ---------- indicator (owns the toggle) -------------------------------- */
@@ -119,17 +127,17 @@ class LitraIndicator extends SystemIndicator {
         // Power toggle; the two sliders live in its popup menu, reached via the
         // arrow on the toggle's right.
         this._toggle = new LitraToggle();
-        this._toggle.connect('notify::checked', () => {
+        this._toggle.connectObject('notify::checked', () => {
             if (this._syncing)
                 return;
             this._markUser();
             this._syncSubtitle();
             const on = this._toggle.checked;
             this._command(d => d.setOn(on));
-        });
+        }, this);
 
         this._bright = this._toggle.brightness;
-        this._bright.slider.connect('notify::value', () => {
+        this._bright.slider.connectObject('notify::value', () => {
             if (this._syncing)
                 return;
             this._markUser();
@@ -139,10 +147,10 @@ class LitraIndicator extends SystemIndicator {
             this._lumen = lumen;
             this._syncSubtitle();
             this._debounce('_brightPending', d => d.setBrightness(lumen));
-        });
+        }, this);
 
         this._temp = this._toggle.temperature;
-        this._temp.slider.connect('notify::value', () => {
+        this._temp.slider.connectObject('notify::value', () => {
             if (this._syncing)
                 return;
             this._markUser();
@@ -156,7 +164,7 @@ class LitraIndicator extends SystemIndicator {
             this._kelvin = kelvin;
             this._syncSubtitle();
             this._debounce('_tempPending', d => d.setTemperature(kelvin));
-        });
+        }, this);
 
         this.quickSettingsItems.push(this._toggle);
         this._setVisible(false);        // hidden until a device is found
@@ -235,12 +243,13 @@ class LitraIndicator extends SystemIndicator {
     }
 
     /* The open device, opening the first one found if there is none yet. */
-    _ensureDevice() {
+    async _ensureDevice() {
         if (this._device)
             return this._device;
 
-        const found = findDevice();
-        if (!found)
+        const found = await findDevice();
+        // disable() may have run while the search was in flight
+        if (!found || this._destroyed)
             return null;
 
         const device = new LitraDevice(found.path, found.model, {
@@ -287,7 +296,9 @@ class LitraIndicator extends SystemIndicator {
             return;
         this._polling = true;
         try {
-            const device = this._ensureDevice();
+            const device = await this._ensureDevice();
+            if (this._destroyed)
+                return;
             if (!device) {
                 this._setVisible(false);
                 return;
@@ -345,11 +356,21 @@ class LitraIndicator extends SystemIndicator {
     destroy() {
         this._destroyed = true;
 
-        for (const slot of ['_pollId', '_eventPollId', '_brightPending', '_tempPending']) {
-            if (this[slot]) {
-                GLib.source_remove(this[slot]);
-                this[slot] = 0;
-            }
+        if (this._pollId) {
+            GLib.source_remove(this._pollId);
+            this._pollId = 0;
+        }
+        if (this._eventPollId) {
+            GLib.source_remove(this._eventPollId);
+            this._eventPollId = 0;
+        }
+        if (this._brightPending) {
+            GLib.source_remove(this._brightPending);
+            this._brightPending = 0;
+        }
+        if (this._tempPending) {
+            GLib.source_remove(this._tempPending);
+            this._tempPending = 0;
         }
         if (this._panelMenuId) {
             this._panelMenu.disconnect(this._panelMenuId);
@@ -359,7 +380,13 @@ class LitraIndicator extends SystemIndicator {
 
         this._device?.close();
         this._device = null;
-        this.quickSettingsItems.forEach(item => item.destroy());
+        this._toggle.disconnectObject(this);
+        this._bright.slider.disconnectObject(this);
+        this._temp.slider.disconnectObject(this);
+        this._bright = null;
+        this._temp = null;
+        this._toggle.destroy();
+        this._toggle = null;
         this.quickSettingsItems = [];
         super.destroy();
     }

@@ -4,6 +4,8 @@ Control a **Logitech Litra Glow / Beam** from the **GNOME Quick Settings** menu
 on Debian 13 (GNOME Shell 48, Wayland or X11): power, brightness and colour
 temperature. The tile appears only while a device is plugged in.
 
+<img src="screenshot.png" width="340" alt="The Litra Glow tile and its brightness and temperature sliders in GNOME Quick Settings">
+
 It is a single GNOME Shell extension in plain JavaScript that talks to the
 light directly over its `hidraw` node — no helper binary, no system package,
 and nothing installed outside `$HOME` except one udev rule.

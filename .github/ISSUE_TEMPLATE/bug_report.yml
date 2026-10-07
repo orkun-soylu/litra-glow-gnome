@@ -1,0 +1,75 @@
+name: Bug report
+description: Something does not work — the tile is missing, a control does nothing, GNOME Shell logs an error
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Security problems go through
+        [private reporting](https://github.com/orkun-soylu/litra-glow-gnome/security/advisories/new) instead.
+  - type: input
+    id: gnome
+    attributes:
+      label: GNOME Shell version
+      description: Output of `gnome-shell --version`
+      placeholder: GNOME Shell 48.4
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and version
+      placeholder: Debian 13, Fedora 43, Ubuntu 25.10…
+    validations:
+      required: true
+  - type: dropdown
+    id: session
+    attributes:
+      label: Session type
+      description: Output of `echo $XDG_SESSION_TYPE`
+      options:
+        - Wayland
+        - X11
+    validations:
+      required: true
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device
+      options:
+        - Litra Glow
+        - Litra Beam
+        - Litra Beam LX
+        - Other (say which in the description)
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Extension commit
+      description: Output of `git rev-parse --short HEAD` in your checkout, or the date you installed it
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: access
+    attributes:
+      label: Device access
+      description: |
+        Output of `ls -l /dev/hidraw*` with the light plugged in. The device's node
+        should show a `+` (an ACL from the udev rule).
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: GNOME Shell log
+      description: |
+        Run `journalctl -f -o cat /usr/bin/gnome-shell` (or `make logs`), reproduce the
+        problem, and paste the lines that mention the extension.
+      render: text

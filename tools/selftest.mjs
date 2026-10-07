@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
 // Protocol tests: the reports protocol.js builds must be byte-for-byte the ones
 // timrogers/litra-rs v3.3.0 sends (src/lib.rs), since that is what the lights
 // are known to accept. Run with `node tools/selftest.mjs` (or `make check`).

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 /* Litra Glow — GNOME Quick Settings control for Logitech Litra devices.
  *
  * The light is driven directly over its hidraw node (device.js, protocol.js);

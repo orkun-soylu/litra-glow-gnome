@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 /* Litra HID++ codec — pure functions, no GNOME imports, so the tests in
  * tools/selftest.mjs can run it under node.
  *

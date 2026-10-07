@@ -116,3 +116,10 @@ unnecessary.
 Message format: [timrogers/litra-rs](https://github.com/timrogers/litra-rs).
 The HID protocol was originally reverse-engineered in
 [kharyam/litra-driver](https://github.com/kharyam/litra-driver).
+
+## License
+
+GPL-2.0-or-later — see [`LICENSE`](LICENSE).
+
+Logitech and Litra are trademarks of Logitech. This project is not affiliated
+with or endorsed by Logitech.

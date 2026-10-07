@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 /* hidraw discovery and asynchronous I/O for a Litra light.
  *
  * GNOME Shell is single-threaded, so nothing here blocks. The node is opened
